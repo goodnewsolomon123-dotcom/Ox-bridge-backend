@@ -18,7 +18,7 @@ ALGORITHM = "HS256"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise Exception("DATABASE_URL is missing!")
+    raise Exception("DATABASE_URL is missing! Please set it in Render Environment Variables.")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
