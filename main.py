@@ -67,7 +67,7 @@ def get_password_hash(password):
         password = password.encode('utf-8')
     return pwd_context.hash(password[:72])
 
-def create_access_token( dict, expires_delta: timedelta = None):
+def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
@@ -123,7 +123,7 @@ def register_user(user: UserRegister, db: Session = Depends(get_db)):
     return {"msg": "User created successfully"}
 
 @app.post("/token")
-def login(form_ OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
