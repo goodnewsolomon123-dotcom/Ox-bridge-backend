@@ -126,12 +126,16 @@ def register_user(user: UserRegister, db: Session = Depends(get_db)):
     return {"msg": "User created successfully"}
 
 @app.post("/token")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Incorrect username or password")
-    token = create_access_token(data={"sub": user.username})
-    return {"access_token": token, "token_type": "bearer"}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/send-message")
 def send_message(msg: MessageSend, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -153,3 +157,10 @@ def get_messages(receiver_username: str, current_user: User = Depends(get_curren
         ((Message.sender_id == receiver.id) & (Message.receiver_id == current_user.id))
     ).order_by(Message.timestamp.asc()).all()
     return [{"content": m.content, "sender": m.sender.username, "timestamp": str(m.timestamp)} for m in msgs]
+
+@app.delete("/clear-users")
+def clear_users(db: Session = Depends(get_db)):
+    db.query(Message).delete()
+    db.query(User).delete()
+    db.commit()
+    return {"msg": "All users and messages deleted"}
