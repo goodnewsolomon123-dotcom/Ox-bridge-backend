@@ -24,6 +24,9 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# Create tables if they don't exist
+Base.metadata.create_all(bind=engine)
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -43,8 +46,6 @@ class Message(Base):
     sender = relationship("User", back_populates="messages_sent", foreign_keys=[sender_id])
     receiver = relationship("User", back_populates="messages_received", foreign_keys=[receiver_id])
 
-# Create all tables immediately after engine creation and before app starts
-Base.metadata.create_all(bind=engine)
 print("✅ Database tables checked/created")
 
 class UserRegister(BaseModel):
