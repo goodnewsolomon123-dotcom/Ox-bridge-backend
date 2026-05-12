@@ -43,7 +43,9 @@ class Message(Base):
     sender = relationship("User", back_populates="messages_sent", foreign_keys=[sender_id])
     receiver = relationship("User", back_populates="messages_received", foreign_keys=[receiver_id])
 
+# Create all tables immediately after engine creation and before app starts
 Base.metadata.create_all(bind=engine)
+print("✅ Database tables checked/created")
 
 class UserRegister(BaseModel):
     username: str
