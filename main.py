@@ -3,7 +3,7 @@ import json
 from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime, Boolean, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
@@ -26,7 +26,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("❌ DATABASE_URL is missing! Set it in Render Environment Variables.")
 
-# Fix for Render PostgreSQL URLs (they sometimes start with postgres:// instead of postgresql://)
+# Fix Render PostgreSQL URL format
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -39,7 +39,7 @@ Base = declarative_base()
 
 
 # ─────────────────────────────────────────────
-# MODELS  (must be defined BEFORE create_all)
+# MODELS (defined BEFORE create_all)
 # ─────────────────────────────────────────────
 class User(Base):
     __tablename__ = "users"
@@ -74,7 +74,7 @@ class Message(Base):
     receiver = relationship("User", back_populates="messages_received", foreign_keys=[receiver_id])
 
 
-# Create all tables NOW (after models are defined)
+# Create tables after models are defined
 try:
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables checked/created successfully")
@@ -91,6 +91,7 @@ class UserRegister(BaseModel):
     email: str
     password: str
 
+
 class UserOut(BaseModel):
     id: int
     username: str
@@ -102,17 +103,11 @@ class UserOut(BaseModel):
     class Config:
         from_attributes = True
 
+
 class MessageSend(BaseModel):
     content: str
     receiver_username: str
 
-class MessageOut(BaseModel):
-    id: int
-    content: str
-    sender: str
-    receiver: str
-    is_read: bool
-    timestamp: str
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -184,7 +179,6 @@ async def get_current_user(
 # ─────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
-        # Maps username -> WebSocket
         self.active: dict[str, WebSocket] = {}
 
     async def connect(self, username: str, websocket: WebSocket):
@@ -249,20 +243,33 @@ def home():
     }
 
 
+# ── DB RESET ──────────────────────────────────
+# Visit this URL once after deploying to fix the DB schema
+# Safe to keep in code — requires manual browser visit
+@app.get("/admin/reset-db")
+def reset_db():
+    try:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        return {"msg": "✅ Database reset successfully! All tables recreated fresh. You can now register a new account."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
+
+
 # ── AUTH ──────────────────────────────────────
 
-@app.post("/register", response_model=dict, status_code=201)
+@app.post("/register", status_code=201)
 def register_user(user: UserRegister, db: Session = Depends(get_db)):
-    # Check username length
     if len(user.username.strip()) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
     if len(user.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
-    # Check for duplicates
     existing = db.query(User).filter(
-        (User.username == user.username.strip()) | (User.email == user.email.strip().lower())
+        (User.username == user.username.strip()) |
+        (User.email == user.email.strip().lower())
     ).first()
+
     if existing:
         if existing.username == user.username.strip():
             raise HTTPException(status_code=400, detail="Username already taken")
@@ -318,7 +325,10 @@ def get_me(current_user: User = Depends(get_current_user)):
 # ── USERS ─────────────────────────────────────
 
 @app.get("/users")
-def get_all_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_all_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     users = db.query(User).filter(User.id != current_user.id).all()
     return [
         {
@@ -360,15 +370,14 @@ async def send_message(
     db.commit()
     db.refresh(new_msg)
 
-    # Real-time notification via WebSocket
-    notification = {
+    # Real-time push via WebSocket
+    await manager.send_to(receiver.username, {
         "type": "new_message",
         "message_id": new_msg.id,
         "from": current_user.username,
         "content": msg.content,
         "timestamp": str(new_msg.timestamp),
-    }
-    await manager.send_to(receiver.username, notification)
+    })
 
     return {"msg": "Message sent ✅", "message_id": new_msg.id}
 
@@ -386,14 +395,14 @@ def get_messages(
     msgs = (
         db.query(Message)
         .filter(
-            ((Message.sender_id == current_user.id) & (Message.receiver_id == other.id))
-            | ((Message.sender_id == other.id) & (Message.receiver_id == current_user.id))
+            ((Message.sender_id == current_user.id) & (Message.receiver_id == other.id)) |
+            ((Message.sender_id == other.id) & (Message.receiver_id == current_user.id))
         )
         .order_by(Message.timestamp.asc())
         .all()
     )
 
-    # Mark received messages as read
+    # Auto mark received messages as read
     for m in msgs:
         if m.receiver_id == current_user.id and not m.is_read:
             m.is_read = True
@@ -413,7 +422,10 @@ def get_messages(
 
 
 @app.get("/unread-count")
-def unread_count(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def unread_count(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     count = (
         db.query(Message)
         .filter(Message.receiver_id == current_user.id, Message.is_read == False)
@@ -462,7 +474,7 @@ def delete_message(
 # ── WEBSOCKET ─────────────────────────────────
 
 @app.websocket("/ws/{token}")
-async def websocket_endpoint(websocket: WebSocket, token: str, db: Session = Depends(get_db)):
+async def websocket_endpoint(websocket: WebSocket, token: str):
     # Authenticate via token
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -474,47 +486,48 @@ async def websocket_endpoint(websocket: WebSocket, token: str, db: Session = Dep
         await websocket.close(code=4001)
         return
 
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        await websocket.close(code=4001)
-        return
-
-    # Connect
-    await manager.connect(username, websocket)
-
-    # Update DB presence
-    user.is_online = True
-    user.last_seen = datetime.utcnow()
-    db.commit()
-
-    # Notify everyone this user is online
-    await manager.broadcast(
-        {"type": "presence", "username": username, "status": "online"},
-        exclude=username,
-    )
-
-    # Send pending unread count to user on connect
-    unread = (
-        db.query(Message)
-        .filter(Message.receiver_id == user.id, Message.is_read == False)
-        .count()
-    )
-    await manager.send_to(username, {"type": "unread_count", "count": unread})
-
+    db = SessionLocal()
     try:
-        while True:
-            # Keep connection alive; client can send pings
-            data = await websocket.receive_text()
-            try:
-                parsed = json.loads(data)
-                # Handle ping
-                if parsed.get("type") == "ping":
-                    await manager.send_to(username, {"type": "pong"})
-            except Exception:
-                pass
-    except WebSocketDisconnect:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            await websocket.close(code=4001)
+            return
+
+        await manager.connect(username, websocket)
+
+        # Mark online
+        user.is_online = True
+        user.last_seen = datetime.utcnow()
+        db.commit()
+
+        # Notify everyone this user is online
+        await manager.broadcast(
+            {"type": "presence", "username": username, "status": "online"},
+            exclude=username,
+        )
+
+        # Send unread count immediately on connect
+        unread = (
+            db.query(Message)
+            .filter(Message.receiver_id == user.id, Message.is_read == False)
+            .count()
+        )
+        await manager.send_to(username, {"type": "unread_count", "count": unread})
+
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    parsed = json.loads(data)
+                    if parsed.get("type") == "ping":
+                        await manager.send_to(username, {"type": "pong"})
+                except Exception:
+                    pass
+        except WebSocketDisconnect:
+            pass
+
+    finally:
         manager.disconnect(username)
-        # Update DB presence
         db2 = SessionLocal()
         try:
             u = db2.query(User).filter(User.username == username).first()
@@ -524,17 +537,20 @@ async def websocket_endpoint(websocket: WebSocket, token: str, db: Session = Dep
                 db2.commit()
         finally:
             db2.close()
-        # Notify everyone this user is offline
+        db.close()
+
         await manager.broadcast(
             {"type": "presence", "username": username, "status": "offline"}
         )
 
 
-# ── ADMIN (protected) ─────────────────────────
+# ── ADMIN ─────────────────────────────────────
 
 @app.delete("/admin/clear-all")
-def clear_all(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Only allow if username is "admin"
+def clear_all(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     if current_user.username != "admin":
         raise HTTPException(status_code=403, detail="Admin access only")
     db.query(Message).delete()
