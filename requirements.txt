@@ -1,9 +1,11 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 pyjwt
 passlib[bcrypt]
-bcrypt==3.2.2
+bcrypt==4.0.1
 python-multipart
 psycopg2-binary
 python-dotenv
+websockets
+email-validator
