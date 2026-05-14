@@ -8,4 +8,5 @@ python-multipart
 psycopg2-binary
 python-dotenv
 websockets
+cloudinary
 email-validator
